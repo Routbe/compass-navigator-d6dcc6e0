@@ -250,7 +250,7 @@ export async function buildMastodonAuthorizeUrl(input: {
   return { url: `https://${instance}/oauth/authorize?${params.toString()}`, instance, cid };
 }
 
-type Account = { username: string; displayName: string; avatar: string | null; url: string };
+type Account = { id: string; username: string; displayName: string; avatar: string | null; url: string };
 
 async function verifyCredentials(instance: string, token: string): Promise<Account> {
   const res = await timedFetch(`https://${instance}/api/v1/accounts/verify_credentials`, {
@@ -263,14 +263,16 @@ async function verifyCredentials(instance: string, token: string): Promise<Accou
     );
   }
   const json = (await res.json().catch(() => null)) as {
+    id?: string;
     username?: string;
     display_name?: string;
     avatar?: string;
     url?: string;
   } | null;
-  if (!json?.username)
+  if (!json?.username || typeof json.id !== "string" || !/^\d+$/.test(json.id))
     throw new MastodonAuthError("account_unverified", `${instance} returned an empty profile.`);
   return {
+    id: json.id,
     username: json.username,
     displayName: json.display_name || json.username,
     avatar: json.avatar ?? null,
