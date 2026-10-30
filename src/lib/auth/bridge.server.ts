@@ -1,5 +1,6 @@
 import type { SessionUser } from "@/lib/auth/session.server";
 import { sql } from "@/lib/neon";
+import { ownsAuthIdentity, IDENTITY_EMAIL_CONFLICT } from "@/lib/identity/link-rules";
 
 /**
  * Better Auth (self-hosted, System A) → `public.users` bridge.
@@ -59,7 +60,10 @@ export async function bridgeIdentity(identity: RoutIdentity): Promise<SessionUse
     select id, email, email_confirmed_at, user_metadata, app_metadata, created_at,
            last_sign_in_at, is_disabled
       from public.users
-     where email_normalized = ${email}
+     where user_metadata->>'neon_auth_id' = ${identity.id}
+        or id::text = ${identity.id}
+        or email_normalized = ${email}
+     order by (user_metadata->>'neon_auth_id' = ${identity.id}) desc nulls last
      limit 1
   `) as Row[];
 
@@ -68,9 +72,10 @@ export async function bridgeIdentity(identity: RoutIdentity): Promise<SessionUse
   if (row) {
     if (row["is_disabled"]) return null;
     const meta = (row["user_metadata"] as Record<string, unknown> | null) ?? {};
-    // Nooit samenvoegen op een onbevestigd e-mailadres (bv. Infomaniak/OIDC
-    // zonder email_verified): alleen een al gekoppelde identiteit mag binnen.
-    if (meta["neon_auth_id"] !== identity.id && !identity.emailVerified) return null;
+    // Email is metadata, never authority, even when a provider verified it.
+    if (!ownsAuthIdentity(row["id"], meta["neon_auth_id"], identity.id)) {
+      throw new Error(IDENTITY_EMAIL_CONFLICT);
+    }
     if (meta["neon_auth_id"] !== identity.id) {
       await sql`
         update public.users
@@ -91,15 +96,16 @@ export async function bridgeIdentity(identity: RoutIdentity): Promise<SessionUse
       avatar_url: identity.image,
     };
     const inserted = (await sql`
-      insert into public.users (email, password_hash, user_metadata, email_confirmed_at,
+      insert into public.users (id, email, user_metadata, email_confirmed_at,
                                 last_sign_in_at)
-      values (${identity.email}, null, ${JSON.stringify(metadata)}::jsonb,
+      values (${identity.id}, ${identity.email}, ${JSON.stringify(metadata)}::jsonb,
               ${identity.emailVerified ? new Date().toISOString() : null}, now())
-      on conflict (email_normalized) do update set last_sign_in_at = now()
+      on conflict (email_normalized) do nothing
       returning id, email, email_confirmed_at, user_metadata, app_metadata, created_at,
                 last_sign_in_at
     `) as Row[];
     row = inserted[0] ?? null;
+    if (!row) throw new Error(IDENTITY_EMAIL_CONFLICT);
     if (row && identity.emailVerified) {
       const { ensureOwnerAdmin } = await import("@/lib/auth/owner-admin.server");
       await ensureOwnerAdmin(row["id"] as string, email);

@@ -7,6 +7,7 @@ import { passkey } from "@better-auth/passkey";
 import { GatewayPool, databaseTransport, hasDatabase } from "@/lib/neon";
 import { APP_DOMAINS } from "@/lib/app-domains";
 import { canonicalAppUrl, isApprovedHost } from "@/lib/app-url";
+import { EXPLICIT_ACCOUNT_LINKING } from "@/lib/identity/link-rules";
 
 /**
  * Self-hosted Better Auth — ROUT's own identity layer (System A).
@@ -313,15 +314,7 @@ export function createRoutAuth(request?: Request) {
     },
     account: {
       modelName: "neon_auth.account",
-      accountLinking: {
-        enabled: true,
-        // No trusted providers: at sign-in a social account is only merged into
-        // an existing ROUT user when the provider reports the e-mail verified.
-        trustedProviders: [],
-        // Explicit linking (signed-in member, Settings → Linked identities)
-        // may attach an account with a different e-mail.
-        allowDifferentEmails: true,
-      },
+      accountLinking: EXPLICIT_ACCOUNT_LINKING,
     },
     verification: { modelName: "neon_auth.verification" },
     databaseHooks: {
