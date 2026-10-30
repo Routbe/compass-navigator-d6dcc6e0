@@ -10,6 +10,8 @@ import { isValidRedirectUri, cleanRedirectUri, findMatchingRedirect, normalizeRe
  */
 import { sql } from "@/lib/neon";
 import { generateClientSecret, hashClientSecret, verifyClientSecret } from "./client-secret";
+import { pairwiseSubject, redirectSector } from "./subject";
+import { validAccessClaims } from "./token-policy";
 
 /** Pepper for client-secret hashes: dedicated env var, else the auth secret. */
 async function secretPepper(): Promise<string> {
@@ -22,7 +24,7 @@ async function secretPepper(): Promise<string> {
 }
 import { canonicalAppUrl } from "@/lib/app-url";
 
-export const SUPPORTED_SCOPES = ["openid", "profile", "email", "linked_accounts"] as const;
+export const SUPPORTED_SCOPES = ["openid", "profile", "email", "linked_accounts", "offline_access"] as const;
 export type Scope = (typeof SUPPORTED_SCOPES)[number];
 
 const CODE_TTL_MS = 60 * 1000;
@@ -61,6 +63,9 @@ export type OAuthClient = {
   allowedIps: string[];
   /** Stille herkenning via `prompt=none`. */
   accountDiscoveryEnabled: boolean;
+  subjectType: "public" | "pairwise";
+  sectorId: string | null;
+  postLogoutRedirectUris: string[];
 };
 
 export type PublishingStatus = "testing" | "production";
@@ -138,6 +143,9 @@ function toClient(row: Row): OAuthClient {
     accessTokenTtl: Number(row["access_token_ttl"] ?? ID_TOKEN_TTL_S) || ID_TOKEN_TTL_S,
     allowedIps: (row["allowed_ips"] as string[] | null) ?? [],
     accountDiscoveryEnabled: Boolean(row["account_discovery_enabled"]),
+    subjectType: row["subject_type"] === "pairwise" ? "pairwise" : "public",
+    sectorId: typeof row["sector_id"] === "string" ? row["sector_id"] : null,
+    postLogoutRedirectUris: (row["post_logout_redirect_uris"] as string[] | null) ?? [],
   };
 }
 
@@ -194,14 +202,17 @@ export async function createClient(
   input: ClientInput,
 ): Promise<{ client: OAuthClient; clientSecret: string }> {
   const { name, uris, scopes } = sanitize(input);
+  const sectors = new Set(uris.map(redirectSector));
+  if (sectors.size !== 1) throw new OAuthError("invalid_client_metadata", "Pairwise apps vereisen één redirect-host.");
+  const sectorId = uris[0] ? redirectSector(uris[0]) : null;
   const clientId = `rout_${randomToken(16)}`;
   const clientSecret = generateClientSecret();
   const secretHash = await hashClientSecret(clientSecret, await secretPepper());
   const rows = (await sql`insert into public.oauth_clients
-    (owner_user_id, client_id, secret_hash, name, logo_url, homepage_url, privacy_url, terms_url, redirect_uris, scopes)
+    (owner_user_id, client_id, secret_hash, name, logo_url, homepage_url, privacy_url, terms_url, redirect_uris, scopes, subject_type, sector_id)
     values (${ownerUserId}, ${clientId}, ${secretHash}, ${name}, ${input.logoUrl ?? null},
             ${input.homepageUrl ?? null}, ${input.privacyUrl ?? null}, ${input.termsUrl ?? null},
-            ${uris}, ${scopes})
+            ${uris}, ${scopes}, 'pairwise', ${sectorId})
     returning *`) as Row[];
   const created = rows[0]!;
   if (input.description) {
@@ -225,6 +236,10 @@ export async function updateClient(
   input: ClientInput,
 ): Promise<OAuthClient> {
   const { name, uris, scopes } = sanitize(input);
+  const current = await getClientByClientId((await sql`select client_id from public.oauth_clients where id=${id} and owner_user_id=${ownerUserId}`)[0]?.["client_id"] ?? "");
+  if (current?.subjectType === "pairwise" && uris.some((uri) => redirectSector(uri) !== current.sectorId)) {
+    throw new OAuthError("invalid_client_metadata", "De pairwise redirect-host kan niet stilzwijgend wijzigen.");
+  }
   const rows = (await sql`update public.oauth_clients set
       name = ${name}, logo_url = ${input.logoUrl ?? null},
       homepage_url = ${input.homepageUrl ?? null}, privacy_url = ${input.privacyUrl ?? null},
@@ -482,7 +497,7 @@ export async function issueAuthorizationCode(input: {
 export async function rememberConsent(userId: string, clientId: string, scopes: string[]) {
   await sql`insert into public.oauth_consents (user_id, client_id, scopes)
     values (${userId}, ${clientId}, ${scopes})
-    on conflict (user_id, client_id) do update set scopes = excluded.scopes, granted_at = now()`;
+    on conflict (user_id, client_id) do update set scopes = excluded.scopes, granted_at = now(), revoked_at = null`;
 }
 
 async function consumeCode(code: string) {
@@ -498,7 +513,7 @@ async function consumeCode(code: string) {
 
 export { publicJwks } from "./keys.server";
 
-async function signJwt(payload: Record<string, unknown>): Promise<string> {
+export async function signJwt(payload: Record<string, unknown>): Promise<string> {
   const { activeKey } = await import("./keys.server");
   const key = await activeKey();
   const header = { alg: "ES256", typ: "JWT", kid: key.kid };
@@ -580,28 +595,44 @@ export async function exchangeAuthorizationCode(input: {
   const now = Math.floor(Date.now() / 1000);
   const idToken = await signJwt({
     iss: issuer(),
-    sub: userId,
+    sub: await subjectFor(client, userId, String(row["redirect_uri"])),
     aud: input.clientId,
     iat: now,
     exp: now + ttl,
+    token_use: "id",
+    ...(row["auth_time"] ? { auth_time: Math.floor(new Date(String(row["auth_time"])).getTime() / 1000) } : {}),
     ...(row["nonce"] ? { nonce: String(row["nonce"]) } : {}),
     ...(row["acr"] ? { acr: String(row["acr"]) } : {}),
     ...claims,
   });
   const accessToken = await signJwt({
     iss: issuer(),
-    sub: userId,
+    sub: await subjectFor(client, userId, String(row["redirect_uri"])),
     aud: input.clientId,
     scope: scopes.join(" "),
     iat: now,
     exp: now + ttl,
+    token_use: "access",
+    jti: randomToken(16),
   });
+  const subject = await subjectFor(client, userId, String(row["redirect_uri"]));
+  let refreshToken: string | undefined;
+  let familyId: string | null = null;
+  if (scopes.includes("offline_access") && await hasConsent(userId, client.clientId, ["offline_access"])) {
+    refreshToken = randomToken(48);
+    familyId = crypto.randomUUID();
+    await sql`insert into public.oauth_refresh_tokens(family_id,token_hash,client_id,user_id,scopes,expires_at,subject,auth_time,acr)
+      values(${familyId},${await sha256Base64Url(refreshToken)},${client.clientId},${userId},${scopes},now()+interval '30 days',${subject},${row["auth_time"] ?? null},${row["acr"] ?? null})`;
+  }
+  await sql`insert into public.oauth_access_tokens(token_hash,client_id,user_id,subject,scopes,family_id,expires_at)
+    values(${await sha256Base64Url(accessToken)},${client.clientId},${userId},${subject},${scopes},${familyId},${new Date((now+ttl)*1000).toISOString()})`;
   return {
     access_token: accessToken,
     id_token: idToken,
     token_type: "Bearer",
     expires_in: ttl,
     scope: scopes.join(" "),
+    ...(refreshToken ? { refresh_token: refreshToken } : {}),
   };
 }
 
@@ -707,7 +738,7 @@ export async function isVerifiedDeveloper(userId: string): Promise<boolean> {
 /** Verifieert een door ROUT uitgegeven access-token en geeft sub + scopes terug. */
 export async function verifyAccessToken(
   token: string,
-): Promise<{ sub: string; scopes: string[]; clientId: string | null }> {
+): Promise<{ sub: string; userId: string; scopes: string[]; clientId: string | null }> {
   const parts = token.split(".");
   if (parts.length !== 3) throw new OAuthError("invalid_token", "Ongeldig token.");
   const [headerPart, payloadPart, signaturePart] = parts as [string, string, string];
@@ -730,20 +761,23 @@ export async function verifyAccessToken(
     enc.encode(`${headerPart}.${payloadPart}`) as BufferSource,
   );
   if (!ok) throw new OAuthError("invalid_token", "Handtekening klopt niet.");
-  const payload = JSON.parse(new TextDecoder().decode(fromB64(payloadPart))) as {
-    sub?: string;
-    exp?: number;
-    scope?: string;
-    aud?: string;
-  };
-  if (!payload.sub) throw new OAuthError("invalid_token", "Token mist een gebruiker.");
-  if ((payload.exp ?? 0) * 1000 < Date.now()) {
-    throw new OAuthError("invalid_token", "Token is verlopen.");
-  }
+  const payload = JSON.parse(new TextDecoder().decode(fromB64(payloadPart))) as Record<string, unknown>;
+  if (!validAccessClaims(payload, issuer(), Math.floor(Date.now()/1000))) throw new OAuthError("invalid_token", "Ongeldige access-tokenclaims.");
+  const rows = await sql`select t.user_id from public.oauth_access_tokens t
+    join public.oauth_clients c on c.client_id=t.client_id
+    join public.users u on u.id=t.user_id
+    join public.oauth_consents g on g.user_id=t.user_id and g.client_id=t.client_id
+    where t.token_hash=${await sha256Base64Url(token)} and t.revoked_at is null and t.expires_at>now()
+      and t.subject=${payload["sub"]} and t.client_id=${payload["aud"]}
+      and c.status='active' and not u.is_disabled and u.account_status='active' and g.revoked_at is null
+      and (t.family_id is null or not exists(select 1 from public.oauth_refresh_tokens r where r.family_id=t.family_id and r.revoked_at is not null))
+    limit 1`;
+  const userId = rows[0]?.["user_id"];
+  if (typeof userId !== "string") throw new OAuthError("invalid_token", "Token is ingetrokken.");
   return {
-    sub: payload.sub,
-    scopes: (payload.scope ?? "").split(" ").filter(Boolean),
-    clientId: typeof payload.aud === "string" ? payload.aud : null,
+    sub: String(payload["sub"]), userId,
+    scopes: String(payload["scope"]).split(" ").filter(Boolean),
+    clientId: String(payload["aud"]),
   };
 }
 
@@ -754,7 +788,7 @@ export async function hasConsent(
   scopes: string[],
 ): Promise<boolean> {
   const rows = (await sql`select scopes from public.oauth_consents
-    where user_id = ${userId} and client_id = ${clientId} limit 1`) as Row[];
+    where user_id = ${userId} and client_id = ${clientId} and revoked_at is null limit 1`) as Row[];
   const granted = (rows[0]?.["scopes"] as string[] | null) ?? null;
   if (!granted) return false;
   return scopes.every((s) => granted.includes(s));
@@ -803,6 +837,26 @@ export async function consumeVerifiedStepUp(userId: string, clientId: string): P
                    and verified_at is not null and consumed_at is null
                    and verified_at > now() - interval '10 minutes'
                  order by verified_at desc limit 1)
+    and consumed_at is null
     returning id`) as Row[];
   return rows.length > 0;
+}
+
+export async function subjectFor(client: OAuthClient, userId: string, redirectUri: string): Promise<string> {
+  if (client.subjectType === "public") return userId;
+  const sector = redirectSector(redirectUri);
+  if (!client.sectorId || client.sectorId !== sector) throw new OAuthError("invalid_client", "Pairwise sector klopt niet.");
+  const secret = process.env["ROUT_PROVIDER_PAIRWISE_SECRET"];
+  if (!secret || secret.length<32) throw new OAuthError("server_error", "Pairwise geheim ontbreekt.");
+  return pairwiseSubject(secret, sector, userId);
+}
+
+export async function authenticateOAuthClient(clientId: string, clientSecret: string | null, ip: string | null, confidential = false) {
+  const client = await getClientByClientId(clientId);
+  if (!client || client.status !== "active" || !ipAllowed(client, ip)) throw new OAuthError("invalid_client", "Ongeldige client.");
+  const rows = await sql`select secret_hash from public.oauth_clients where client_id=${clientId} limit 1`;
+  const hash = rows[0]?.["secret_hash"];
+  if (confidential && typeof hash !== "string") throw new OAuthError("invalid_client", "Vertrouwelijke client vereist.");
+  if (typeof hash === "string" && (!clientSecret || !(await verifyClientSecret(clientSecret, hash, await secretPepper())))) throw new OAuthError("invalid_client", "Ongeldige client.");
+  return client;
 }
