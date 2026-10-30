@@ -136,7 +136,7 @@ export default function AuthNeon({ initialMode = "magic" }: { initialMode?: Mode
     const redirect = params.get("redirect") ?? params.get("next");
     if (code) {
       const known = (AUTH_ERROR_CODES as readonly string[]).includes(code) ? code : "provider_rejected";
-      toast.error(t(AUTH_ERROR_TEXT[known]));
+      toast.error(known === "account_not_linked" ? IDENTITY_EMAIL_CONFLICT : t(AUTH_ERROR_TEXT[known]));
     } else if (legacy) {
       toast.error(t(AUTH_ERROR_TEXT["provider_rejected"]));
     }
@@ -366,7 +366,7 @@ export default function AuthNeon({ initialMode = "magic" }: { initialMode?: Mode
         value={email}
         onChange={(e) => onEmailChange(e.target.value)}
         placeholder={t("auth.email.placeholder")}
-        autoComplete="email"
+        autoComplete="username webauthn"
         aria-invalid={emailError ? true : undefined}
         aria-describedby={emailError ? "auth-email-error" : undefined}
         className={`h-10 rounded-lg ${emailError ? "border-destructive focus-visible:ring-destructive/30" : ""}`}
@@ -398,6 +398,10 @@ export default function AuthNeon({ initialMode = "magic" }: { initialMode?: Mode
             <h1 className="mb-1 font-display text-2xl text-foreground">{adminPortal ? t("auth.admin") : t("auth.ui.title")}</h1>
             <p className="text-sm text-muted-foreground">{adminPortal ? t("auth.signin") : t("auth.ui.subtitle")}</p>
           </div>
+
+          <Button type="button" onClick={() => void passkeyLogin()} disabled={loading} className="mb-3 h-11 w-full gap-2">
+            <KeyRound className="h-4 w-4" /> {t("auth.passkey")}
+          </Button>
 
           <div
             data-testid="auth-provider-tiles"
@@ -436,16 +440,6 @@ export default function AuthNeon({ initialMode = "magic" }: { initialMode?: Mode
               {t("auth.provider.connecting", { name: visibleTiles.find((x) => x.id === connecting)?.label ?? connecting })}
             </p>
           )}
-
-          <Button
-            type="button"
-            onClick={() => void passkeyLogin()}
-            disabled={loading}
-            className="mt-2 flex h-11 w-full items-center justify-center gap-2 text-sm"
-          >
-            <KeyRound className="h-4 w-4" />
-            {t("auth.passkey")}
-          </Button>
 
           {needTotp && (
             <form onSubmit={verifyTotp} className="mt-3 space-y-2 rounded-xl border border-border p-3">
