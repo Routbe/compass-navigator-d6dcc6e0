@@ -66,19 +66,22 @@ export const finishBlueskyLogin = createServerFn({ method: "POST" })
         : { provider_kind: "mastodon", fediverse_handle: pending.handle };
 
     const existing = await findUserByEmail(email);
-    const userId = existing
-      ? String(existing["id"])
-      : (await createUser({ email, metadata: { ...metadata, full_name: pending.handle }, emailConfirmed: true })).id;
-    if (existing) await updateUserMetadata(userId, metadata);
+    // Mailbox control does not authorize attaching an unknown provider to an existing account.
+    if (existing) {
+      const { IDENTITY_EMAIL_CONFLICT } = await import("@/lib/identity/link-rules");
+      throw new Error(IDENTITY_EMAIL_CONFLICT);
+    }
+    const userId = (await createUser({ email, metadata: { ...metadata, full_name: pending.handle }, emailConfirmed: true })).id;
 
     const { linkIdentity } = await import("@/lib/identities.server");
-    await linkIdentity({
+    const linked = await linkIdentity({
       userId,
       provider: pending.provider,
       providerAccountId: pending.accountId,
       email,
       displayName: pending.handle,
     });
+    if (!linked) throw new Error("identity_already_owned");
 
     const { sql } = await import("@/lib/neon");
     await sql`update public.users set last_sign_in_at = now() where id = ${userId}`;

@@ -162,7 +162,7 @@ export async function attachIdentity(input: {
   `) as Row[];
   const current = owner[0]?.["user_id"] as string | undefined;
   if (current && current !== input.userId) return { ok: false, reason: "taken" };
-  await linkIdentity(input);
+  if (!(await linkIdentity(input))) return { ok: false, reason: "taken" };
   return { ok: true };
 }
 
@@ -175,17 +175,19 @@ export async function linkIdentity(input: {
   displayName?: string | null;
   avatarUrl?: string | null;
 }) {
-  await sql`
+  const rows = await sql`
     insert into public.user_identities
       (user_id, provider, provider_account_id, email, display_name, avatar_url)
     values (${input.userId}, ${input.provider}, ${input.providerAccountId},
             ${input.email ?? null}, ${input.displayName ?? null}, ${input.avatarUrl ?? null})
     on conflict (provider, provider_account_id) do update
-      set user_id = excluded.user_id,
-          email = excluded.email,
+      set email = excluded.email,
           display_name = excluded.display_name,
           avatar_url = excluded.avatar_url
+      where public.user_identities.user_id = excluded.user_id
+    returning id
   `;
+  return rows.length > 0;
 }
 
 export async function unlinkIdentity(userId: string, identityId: string) {
