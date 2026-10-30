@@ -27,6 +27,7 @@ export const AUTH_ERROR_CODES = [
   "state_mismatch",
   "link_expired",
   "access_denied",
+  "account_not_linked",
 ] as const;
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
 
@@ -58,6 +59,7 @@ export function safeNextPath(raw: string | null | undefined): string | null {
 export function cleanAuthError(raw: string | null | undefined): AuthErrorCode {
   const v = (raw ?? "").toLowerCase();
   if (!v) return "provider_rejected";
+  if (/account[ _]not[ _]linked|email_conflict/.test(v)) return "account_not_linked";
   if (v.includes("not_configured") || v.includes("provider_not_found")) return "provider_not_configured";
   if (v.includes("state")) return "state_mismatch";
   if (v.includes("expired") || v.includes("invalid_token") || v.includes("invalid token")) return "link_expired";

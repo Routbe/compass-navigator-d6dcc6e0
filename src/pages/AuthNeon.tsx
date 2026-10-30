@@ -31,6 +31,7 @@ import { usePortalFrame } from "@/components/layout/PortalContext";
 import { withAltcha } from "@/lib/altcha-client";
 import { OtpInput } from "@/components/otp/OtpInput";
 import { redeemLoginCodeFn } from "@/lib/login-code.functions";
+import { IDENTITY_EMAIL_CONFLICT } from "@/lib/identity/link-rules";
 
 /** Providers die via Better Auth's generic OAuth/OIDC-plugin lopen. */
 const GENERIC_OAUTH = new Set(["oidc", "infomaniak", "proton"]);
@@ -436,14 +437,15 @@ export default function AuthNeon({ initialMode = "magic" }: { initialMode?: Mode
             </p>
           )}
 
-          <button
+          <Button
             type="button"
             onClick={() => void passkeyLogin()}
             disabled={loading}
-            className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-border/60 bg-card/60 text-sm transition-all hover:bg-muted/50 disabled:opacity-60"
+            className="mt-2 flex h-11 w-full items-center justify-center gap-2 text-sm"
           >
+            <KeyRound className="h-4 w-4" />
             {t("auth.passkey")}
-          </button>
+          </Button>
 
           {needTotp && (
             <form onSubmit={verifyTotp} className="mt-3 space-y-2 rounded-xl border border-border p-3">

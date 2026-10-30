@@ -316,9 +316,10 @@ async function exchangeCode(state: StatePayload, code: string): Promise<string> 
  * into the httpOnly session cookie, exactly like password sign-in does.
  */
 async function mintNeonSession(instance: string, account: Account) {
-  const { findUserByEmail, updateUserMetadata } = await import("./auth/users.server");
+  const { updateUserMetadata } = await import("./auth/users.server");
+  const { mastodonSubject } = await import("./identity/link-rules");
 
-  const email = fediverseEmail(account.username, instance);
+  const subject = mastodonSubject(`https://${instance}`, String(account.id));
   const handle = fediverseHandle(account.username, instance);
   mastodonLog("info", "session_mint_started", { instance, handle });
   const metadata = {
@@ -335,23 +336,18 @@ async function mintNeonSession(instance: string, account: Account) {
     const { sql } = await import("./neon");
     const linked = (await sql`
       select user_id from public.user_identities
-       where provider = 'mastodon' and provider_account_id = ${handle}
+       where provider = 'mastodon' and provider_account_id = ${subject}
        limit 1`) as Record<string, unknown>[];
     let userId = linked[0]?.["user_id"] ? String(linked[0]["user_id"]) : null;
-    // 2. Bestaand account van vóór de e-mailstap (afgeleid adres, enkel
-    //    bereikbaar via dit geverifieerde Mastodon-account).
-    if (!userId) {
-      const legacy = await findUserByEmail(email);
-      if (legacy) userId = String(legacy["id"]);
-    }
+    // Mutable handles and synthetic emails are never identity ownership proof.
     // 3. Nieuw: eerst een e-mailadres + code — nooit stil een account maken.
     if (!userId) {
       mastodonLog("info", "email_step_required", { instance, handle });
-      return { userId: null, handle, displayName: account.displayName };
+      return { userId: null, handle, subject, displayName: account.displayName };
     }
     await updateUserMetadata(userId, metadata);
     mastodonLog("info", "session_minted", { instance, handle });
-    return { userId, handle, displayName: account.displayName };
+    return { userId, handle, subject, displayName: account.displayName };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unknown";
     mastodonLog("error", "session_mint_failed", { instance, handle, reason });

@@ -29,7 +29,7 @@ export const Route = createFileRoute("/auth_/mastodon/callback")({
           const { completeMastodonCallback } = await import("@/lib/mastodon-auth.server");
           const { createAppSessionValue } = await import("@/lib/app-session.server");
           const result = await completeMastodonCallback({ code, state });
-          const linked = await maybeLinkToCurrentUser(request, "mastodon", result.handle, result.handle);
+          const linked = await maybeLinkToCurrentUser(request, "mastodon", result.subject, result.handle);
           if (linked) {
             const h = new Headers({ location: linked, "cache-control": "no-store" });
             h.append("set-cookie", clearLinkIntent());
@@ -39,7 +39,7 @@ export const Route = createFileRoute("/auth_/mastodon/callback")({
             const { signValue } = await import("@/lib/app-session.server");
             const { encodePending, FEDI_PENDING_COOKIE } = await import("@/lib/fediverse-otp.server");
             const pending = await signValue(
-              encodePending({ provider: "mastodon", accountId: result.handle, handle: result.handle, next: result.next }),
+              encodePending({ provider: "mastodon", accountId: result.subject, handle: result.handle, next: result.next }),
             );
             return new Response(null, {
               status: 302,
