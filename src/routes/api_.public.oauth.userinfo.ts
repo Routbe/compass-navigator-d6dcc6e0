@@ -36,9 +36,9 @@ async function handle(request: Request): Promise<Response> {
   }
   try {
     const { verifyAccessToken, identityClaims, getClientByClientId } = await import("@/lib/oauth/provider.server");
-    const { sub, scopes, clientId } = await verifyAccessToken(auth.slice(7).trim());
+    const { sub, userId, scopes, clientId } = await verifyAccessToken(auth.slice(7).trim());
     const client = clientId ? await getClientByClientId(clientId) : null;
-    const claims = await identityClaims(sub, scopes, { handleSync: Boolean(client?.handleSyncEnabled) });
+    const claims = await identityClaims(userId, scopes, { handleSync: Boolean(client?.handleSyncEnabled) });
     return Response.json({ sub, ...claims }, { headers });
   } catch (error) {
     const known = error as { message?: string };

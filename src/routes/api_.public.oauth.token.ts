@@ -13,7 +13,7 @@ export const Route = createFileRoute("/api_/public/oauth/token")({
           headers: {
             "access-control-allow-origin": "*",
             "access-control-allow-methods": "POST, OPTIONS",
-            "access-control-allow-headers": "content-type",
+            "access-control-allow-headers": "content-type, authorization",
           },
         }),
       POST: async ({ request }) => {
@@ -36,6 +36,16 @@ export const Route = createFileRoute("/api_/public/oauth/token")({
           return fail("invalid_request", "De aanvraag kon niet gelezen worden.");
         }
 
+        if (form.get("grant_type") === "refresh_token") {
+          const { readTokenRequest, tokenFailure } = await import("@/lib/oauth/token-request.server");
+          const normalized = new URLSearchParams(form);
+          normalized.set("token", normalized.get("refresh_token") ?? "");
+          try {
+            const input = await readTokenRequest(new Request(request.url, { method: "POST", headers: request.headers, body: normalized.toString() }));
+            const { exchangeRefreshToken } = await import("@/lib/oauth/tokens.server");
+            return Response.json(await exchangeRefreshToken(input),{ headers: { ...cors,"cache-control":"no-store",pragma:"no-cache" } });
+          } catch(error) { return tokenFailure(error); }
+        }
         if (form.get("grant_type") !== "authorization_code") {
           return fail("unsupported_grant_type", "Alleen authorization_code wordt ondersteund.");
         }
@@ -47,6 +57,7 @@ export const Route = createFileRoute("/api_/public/oauth/token")({
 
         const basic = request.headers.get("authorization");
         if (basic?.toLowerCase().startsWith("basic ")) {
+          if (clientSecret) return fail("invalid_client", "Gebruik slechts één client-authenticatiemethode.", 401);
           try {
             const [id, secret] = atob(basic.slice(6)).split(":");
             clientId = clientId ?? decodeURIComponent(id ?? "");

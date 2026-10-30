@@ -61,6 +61,8 @@
 
 ## Login via ROUT (provider role)
 
+- `ROUT_PROVIDER_PAIRWISE_SECRET` — Server-only, 32+ random characters, immutable across deployments. HMAC secret for pairwise OIDC subjects. Rotating it changes every pairwise identity; never derive it from the signing KEK or client secrets.
+
 - `ROUT_CLIENT_ID` — ROUT as identity provider.
 - `ROUT_CLIENT_SECRET` — ROUT as identity provider.
 - `ROUT_API_KEY` — ROUT as identity provider.
