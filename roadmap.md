@@ -1,4 +1,12 @@
 # Roadmap
+## Master directive: Sovereign Identity & Enterprise (30 oktober 2026)
+- [ ] Fase 2: expliciete identity linking, verse step-up, providerproofs, append-only audit en veilige backfill
+- [ ] Fase 3: pairwise subjects, refreshfamilies, revoke/introspect/logout, OIDC-claims en verbonden apps
+- [ ] Fase 4: namespace matrix, merkbescherming, DNS-claims, passkey-first, Data Vault en scope-isolatie
+- [ ] Fase 5: rout_app RLS-policies, users-consolidatie en immutable migraties/snapshot
+- [ ] Acceptatie: volledige Vitest-suite, replay/catalog/no-runtime-DDL en ingelogde end-to-end controles
+- [ ] Infra buiten code: signing KEK op Vercel, bestaande keys verzegelen en public CREATE-recht intrekken
+
 - [ ] Enterprise booking: publieke intakevragen en veilige opslag afronden
 - [ ] Enterprise booking: capaciteit en uitzonderingen controleren
 - [ ] Smart widget: drie vrije tijden en vooraf gekozen boekingscontext
