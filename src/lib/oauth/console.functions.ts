@@ -347,6 +347,9 @@ async function checkRequest(data: AuthorizeInput) {
   if (!redirectAllowed(client, data.redirectUri)) {
     return fail("invalid_redirect_uri", "Het terugkeeradres van deze app klopt niet.");
   }
+  const { parseOidcPrompt, parseMaxAge } = await import("./token-policy");
+  try { parseOidcPrompt(data.prompt); parseMaxAge(data.maxAge); }
+  catch { return fail("invalid_request", "Ongeldige prompt of max_age.", "invalid_request"); }
 
   const hasPkce = data.codeChallenge.length > 0;
   if (hasPkce && (data.codeChallengeMethod !== "S256" || data.codeChallenge.length < 43)) {
@@ -433,6 +436,7 @@ export const decideAuthorizeRequest = createServerFn({ method: "POST" })
     const { client, scopes, stepUp } = checked;
     const { issueAuthorizationCode, rememberConsent, userMayUseClient, consumeVerifiedStepUp } =
       await import("./provider.server");
+    if ((data.prompt ?? "").split(" ").includes("none")) return { error: "prompt=none vereist het stille autorisatiepad." };
 
     if (!data.allow) {
       return {
@@ -475,7 +479,8 @@ export const decideAuthorizeRequest = createServerFn({ method: "POST" })
         await sendSiteMail(r.email, appConnectedMail({ lang: r.lang, name: r.name, app: client.name, scopes, manageUrl: `${siteOrigin()}/dashboard` }), ["console", "app-connected"]);
       });
     }
-    return { redirectTo: redirectWith(data.redirectUri, data.state, { code }) };
+    const { issuer } = await import("./provider.server");
+    return { redirectTo: redirectWith(data.redirectUri, data.state, { code, iss: issuer() }) };
   });
 
 /**
@@ -523,7 +528,8 @@ export const silentAuthorize = createServerFn({ method: "POST" })
       codeChallenge: data.codeChallenge,
       nonce: data.nonce ?? null,
     });
-    return { redirectTo: redirectWith(data.redirectUri, data.state, { code }) };
+    const { issuer } = await import("./provider.server");
+    return { redirectTo: redirectWith(data.redirectUri, data.state, { code, iss: issuer() }) };
   });
 
 /* ------------------------------------------------------------ step-up ---- */
